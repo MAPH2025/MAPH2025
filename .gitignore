@@ -1,0 +1,5 @@
+/data/
+/cpu/
+/compare/EEPH/datasets/*.dat
+/compare/EEPH/build/*
+/compare/CuckooDuo/
