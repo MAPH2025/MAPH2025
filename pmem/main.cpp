@@ -5,7 +5,9 @@
 #include <vector>
 #include <string>
 #include <thread>
-#include "MAPH.h"
+#include <algorithm>
+#include <iomanip>
+#include "MAPH_revision.h"
 
 using namespace std;
 
@@ -36,8 +38,57 @@ vector<Operation> operations;  // 使用vector代替固定数组，更灵活
 vector<Operation> run_ops;
 int record_count = 0;
 
+static inline uint64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()
+    ).count();
+}
+
+static void dump_cdf_p90_p95_p99_u64(const std::string& path,
+                                     std::vector<uint64_t>& samples,
+                                     const std::string& x_name) {
+    if (samples.empty()) return;
+    std::sort(samples.begin(), samples.end());
+
+    std::ofstream out(path);
+    out << x_name << ",cdf\n";
+
+    const size_t n = samples.size();
+    auto emit = [&](double p) {
+        size_t idx = (size_t)std::ceil(p * n) - 1;   // right-quantile
+        if (idx >= n) idx = n - 1;
+        out << samples[idx] << "," << p << "\n";
+    };
+
+    emit(0.90);
+    emit(0.95);
+    emit(0.99);
+}
+
+static void dump_cdf_p90_p95_p99_i32(const std::string& path,
+                                     std::vector<int>& samples,
+                                     const std::string& x_name) {
+    if (samples.empty()) return;
+    std::sort(samples.begin(), samples.end());
+
+    std::ofstream out(path);
+    out << x_name << ",cdf\n";
+
+    const size_t n = samples.size();
+    auto emit = [&](double p) {
+        size_t idx = (size_t)std::ceil(p * n) - 1;
+        if (idx >= n) idx = n - 1;
+        out << samples[idx] << "," << p << "\n";
+    };
+
+    emit(0.90);
+    emit(0.95);
+    emit(0.99);
+}
+
 void read_ycsb_operations(string file_path, vector<Operation>& ops = operations)
 {
+    ops.clear();
     std::ifstream inputFile(file_path);
 
     if (!inputFile.is_open()) {
@@ -631,33 +682,146 @@ void test_kick(){
 //     cuckoo.cal_load_factor();
 // }
 
-void test_expansion(){
-    ofstream res_file("./expansion.csv");
-    int bucket_number = 25000000;
-    CuckooHashTable cuckoo((bucket_number/(2*BUCKET_SIZE)), 10);
-    for(int i = 0; i < 2250000; ++i){
-        if(cuckoo.insert(operations[i].entry) == false){
+// void test_expansion(){
+//     ofstream res_file("./expansion.csv");
+//     int bucket_number = 25000000;
+//     CuckooHashTable cuckoo((bucket_number/(2*BUCKET_SIZE)), 10);
+//     for(int i = 0; i < 2250000; ++i){
+//         if(cuckoo.insert(operations[i].entry) == false){
+//             break;
+//         }
+//     }
+
+//     cuckoo.cal_load_factor();
+//     auto t_start = std::chrono::high_resolution_clock::now();
+//     cuckoo.expansion();
+//     auto t_end = std::chrono::high_resolution_clock::now();
+//     auto duration_time = std::chrono::duration<double>(t_end - t_start).count();
+//     res_file << bucket_number/1000000<<","<<duration_time<<endl;
+//     cuckoo.cal_load_factor();
+// }
+
+void exp_space_time_tradeoff(const std::string& load_file,
+                             const std::string& run_read_file,
+                             int bucket_num,
+                             int max_kick,
+                             double /*target_lf*/,              // 不再使用：改为插入直到失败
+                             const std::string& out_tag) {
+    std::vector<Operation> load_ops;
+    std::vector<Operation> run_ops;
+    read_ycsb_operations(load_file, load_ops);
+    read_ycsb_operations(run_read_file, run_ops);
+
+    CuckooHashTable table(bucket_num, max_kick);
+
+    // --- 1) load: insert until first failure (failure NOT counted) ---
+    const uint64_t total_cells =
+        (uint64_t)bucket_num * (uint64_t)BUCKET_SIZE * 2ull;
+
+    std::vector<uint64_t> insert_lat_ns;
+    std::vector<int> kick_len;
+    insert_lat_ns.reserve(load_ops.size());
+    kick_len.reserve(load_ops.size() / 10);
+
+    uint64_t inserted = 0;
+    size_t fail_i = (size_t)-1;
+    uint64_t fail_key = 0;
+
+    for (size_t i = 0; i < load_ops.size(); i++) {
+        Operation& op = load_ops[i];
+        if (op.type != INSERT) continue;
+
+        uint64_t t0 = now_ns();
+        bool ok = table.insert(op.entry);
+        uint64_t t1 = now_ns();
+
+        if (!ok) {
+            fail_i = i;
+            fail_key = op.entry.key;
+            std::cerr << "[LOAD] insert failed at i=" << i
+                      << " inserted_before_fail=" << inserted
+                      << " key=" << op.entry.key << "\n";
             break;
         }
+
+        // only count successful inserts
+        insert_lat_ns.push_back(t1 - t0);
+        if (table.last_insert_used_kick) kick_len.push_back(table.last_insert_kick_path);
+
+        inserted++;
     }
 
-    cuckoo.cal_load_factor();
-    auto t_start = std::chrono::high_resolution_clock::now();
-    cuckoo.expansion();
-    auto t_end = std::chrono::high_resolution_clock::now();
-    auto duration_time = std::chrono::duration<double>(t_end - t_start).count();
-    res_file << bucket_number/1000000<<","<<duration_time<<endl;
-    cuckoo.cal_load_factor();
+    std::cout << "[LOAD] inserted=" << inserted
+              << " total_cells=" << total_cells
+              << " approx_lf=" << (double)inserted / (double)total_cells
+              << " EXTRA_SLOTS=" << EXTRA_SLOTS;
+    if (fail_i != (size_t)-1) {
+        std::cout << " fail_i=" << fail_i << " fail_key=" << fail_key;
+    } else {
+        std::cout << " (no failure; load_ops exhausted)";
+    }
+    std::cout << "\n";
+
+    table.cal_load_factor();
+
+    // --- 2) dump insert latency CDF + kick length CDF ---
+    {
+        std::string p = out_tag + "_e" + std::to_string(EXTRA_SLOTS) + "_insert_lat_ns_cdf.csv";
+        dump_cdf_p90_p95_p99_u64(p, insert_lat_ns, "lat_ns");
+        std::cout << "Wrote " << p << " n=" << insert_lat_ns.size() << "\n";
+    }
+    {
+        std::string p = out_tag + "_e" + std::to_string(EXTRA_SLOTS) + "_kick_len_cdf.csv";
+        dump_cdf_p90_p95_p99_i32(p, kick_len, "kick_len");
+        std::cout << "Wrote " << p << " n=" << kick_len.size() << "\n";
+    }
+
+    // --- 3) read-only CDF on the loaded table, using run_read_file ---
+    std::vector<uint64_t> read_lat_ns;
+    read_lat_ns.reserve(run_ops.size());
+
+    char result[VAL_LEN];
+    uint64_t reads = 0, hit = 0, miss = 0;
+
+    for (size_t i = 0; i < run_ops.size(); i++) {
+        Operation& op = run_ops[i];
+        if (op.type != READ) continue;
+
+        uint64_t t0 = now_ns();
+        bool ok = table.query(op.entry.key, result);
+        uint64_t t1 = now_ns();
+
+        read_lat_ns.push_back(t1 - t0);
+        reads++;
+        if (ok) hit++; else miss++;
+    }
+
+    std::cout << "[READ] reads=" << reads << " hit=" << hit << " miss=" << miss
+              << " EXTRA_SLOTS=" << EXTRA_SLOTS << "\n";
+
+    {
+        std::string p = out_tag + "_e" + std::to_string(EXTRA_SLOTS) + "_read_lat_ns_cdf.csv";
+        dump_cdf_p90_p95_p99_u64(p, read_lat_ns, "lat_ns");
+        std::cout << "Wrote " << p << " n=" << read_lat_ns.size() << "\n";
+    }
 }
 
 int main(){
     read_ycsb_operations(inputFilePath);
     // read_ycsb_operations(run_inputFilePath,run_ops);
     // test_multi_threads();
-    test_expansion();
-    return 0;
+    //test_expansion();
+
 
     int bucket_num = TEST_SLOTS/(2 * BUCKET_SIZE);
+    int max_kick = 10;
+    exp_space_time_tradeoff("../data/load-90-for-zipfian.txt",
+                            "../data/run-read-zipfian-99.txt",
+                            bucket_num, max_kick, 0.90, "test");
+
+
+    return 0;
+
     printf("bucket num: %d\n",bucket_num);
     CuckooHashTable table(bucket_num, 3);
     int step;
