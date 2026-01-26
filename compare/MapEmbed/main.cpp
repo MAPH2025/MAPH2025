@@ -1,3 +1,4 @@
+//g++ main.cpp -o MapEmbed -lpmem -I. -O3 -std=c++17
 #include <iostream>
 #include <cmath>
 #include <chrono>
@@ -8,11 +9,10 @@
 
 using namespace std;
 
-const string inputFilePath = "../../data/load30M.txt";
-const string run_inputFilePath = "../../data/run30M-YCSBD-latest.txt";
+const string inputFilePath = "../../ycsb_data/temp_op/load2M.txt";
+const string run_inputFilePath = "../../ycsb_data/temp_op/run_update_0.05_zipfian.txt";
 
-KV_entry run_kvPairs[KV_NUM];
-
+#define TEST_SLOTS 210000000
 int basic_test(){
     printf("-------------------Begin basic_test-------------------\n");    
     int testcycles = 1;
@@ -157,7 +157,8 @@ void read_ycsb_load(string load_path, KV_entry* kvPairs = kvPairs)
                 try {
                     uint64_t userID = std::stoull(userIDStr);
                     *(uint64_t*)kvPairs[count].key = userID;
-                    *(uint64_t*)kvPairs[count++].value = 1;
+                    memset(kvPairs[count++].value,'1',VAL_LEN);
+                    //*(uint64_t*)kvPairs[count++].value = 1;
 
                 } catch (const std::invalid_argument& e) {
                     std::cerr << "invalid id: " << userIDStr << std::endl;
@@ -522,7 +523,7 @@ int test_delete(){
 void multi_thread_insert(MapEmbed &table, int begin, int end, chrono::duration<double>& time_cost){
     auto t_start = std::chrono::high_resolution_clock::now();
     for(int i = begin; i < end; i++){
-        if(table.insert(kvPairs[i]) == false){
+        if(table.insert(load_kvPairs[i]) == false){
             break;
         }
     }
@@ -601,35 +602,35 @@ void multi_thread_op(MapEmbed &table, int begin, int end, chrono::duration<doubl
 void test_multi_threads(){
     ofstream res_file("./multi_ycsbd_latest.csv");
     double res[6] = {0};
-    int thread_nums[6] = {1,2,4,8,16,24};
+    int thread_nums[6] = {16};
     for(int t=0;t<1;++t){
-        for(int i=0;i<6;++i){
+        for(int i=0;i<1;++i){
             int thread_num = thread_nums[i];
             std::vector<std::thread> threads;
             int layer = 3;
-            int bucket_number = KV_NUM/N; //500000;
+            int bucket_number = TEST_SLOTS/N; //500000;
             int cell_number[3];
-            cell_number[0] = 150000000;//2250000;
-            cell_number[1] = 75000000;//750000;
-            cell_number[2] = 5000000;//250000;  
+            cell_number[0] = bucket_number*20;//2250000;
+            cell_number[1] = bucket_number*40;//750000;
+            cell_number[2] = bucket_number*50;//250000;  
             int cell_bit = 5;
             
             MapEmbed mapembed(layer, bucket_number, cell_number, cell_bit, 2);
             //prepare data
-            cout<<"THREAD:"<<thread_num<<endl;
-            int start1 = 0, start2 = 27000000;
+            // cout<<"THREAD:"<<thread_num<<endl;
+            int start1 = 0, start2 = 2000000;
             for(int j = start1 ;j < start2; j++){
-                if(mapembed.insert(kvPairs[j]) == false){
+                if(mapembed.insert(load_kvPairs[j]) == false){
                     cout<<"insert fail: "<<j<<endl;
                     //break;
                 }
             }
             cout<<"Finish Prepare Data"<<endl;
             chrono::duration<double> total_time_cost(0);
-            int total_re = 1500000;
+            int total_re = 2000000;
             int record_per_thread = total_re/thread_num;
             for (int ii = 0; ii < thread_num; ++ii){
-                threads.emplace_back(multi_thread_insert,std::ref(mapembed),ii * record_per_thread + start2,(ii+1) * record_per_thread + start2, std::ref(total_time_cost));
+                threads.emplace_back(multi_thread_op,std::ref(mapembed),ii * record_per_thread + start1,(ii+1) * record_per_thread + start1, std::ref(total_time_cost));
             }
             for (auto& t : threads) {
                 t.join();
@@ -673,11 +674,149 @@ void test_expansion(){
     res_file << bucket_number/1000000<<","<<duration_time<<endl;
 }
 
+
+enum class TestOp {
+  INSERT,
+  READ,
+  UPDATE,
+  READ_NEGATIVE,
+  DELETE_OP
+};
+
+
+
+double test_latency(TestOp op,
+                             int total_ops = 2000000,
+                             int neg_reads = 1000000) {
+  /* ---------------- create MapEmbed ---------------- */
+  int layer = 3;
+  int bucket_number = TEST_SLOTS/N;   // 与 cuckoo / maph 使用相同容量尺度
+  int cell_number[3];
+  cell_number[0] = TEST_SLOTS / (2*N);
+  cell_number[1] = TEST_SLOTS / (4*N);
+  cell_number[2] = TEST_SLOTS / (8*N);
+  int cell_bit = 5;
+
+  MapEmbed mapembed(layer, bucket_number, cell_number, cell_bit, 1);
+  mapembed.print_memory_usage_gb();
+  char result[VAL_LEN];
+  size_t ops = 0;
+
+  auto t_begin = std::chrono::high_resolution_clock::now();
+
+  /* ---------------- INSERT ---------------- */
+  if (op == TestOp::INSERT) {
+    for (int i = 0; i < total_ops; ++i) {
+      if (!mapembed.insert(load_kvPairs[i])) {
+        printf("insert fail i:%d\n", i);
+        break;
+      }
+      ops++;
+    }
+  }
+
+  /* ---------------- READ / UPDATE / DELETE / READ_NEGATIVE ---------------- */
+  else {
+    /* ---------- load phase (not timed) ---------- */
+    for (int i = 0; i < total_ops; ++i) {
+      if (!mapembed.insert(load_kvPairs[i])) {
+        printf("insert fail i:%d\n", i);
+        break;
+      }
+    }
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    /* ---------------- READ ---------------- */
+    if (op == TestOp::READ) {
+      for (int i = 0; i < total_ops; ++i) {
+        if (!mapembed.query(run_kvPairs[i].key, result)) {
+          printf("read fail i:%d key:%s\n",
+                 i, kvPairs[i].key);
+          break;
+        }
+        ops++;
+      }
+    }
+
+    /* ---------------- READ NEGATIVE ---------------- */
+    else if (op == TestOp::READ_NEGATIVE) {
+      char neg_key[KEY_LEN] = "hhhhppp";
+
+      for (int i = 0; i < neg_reads; ++i) {
+        mapembed.query(neg_key, result);
+        ops++;
+      }
+    }
+
+    /* ---------------- UPDATE ---------------- */
+    else if (op == TestOp::UPDATE) {
+      for (int i = 0; i < total_ops; ++i) {
+        if (!mapembed.update(run_kvPairs[i])) {
+          printf("update fail i:%d\n", i);
+          break;
+        }
+        ops++;
+      }
+    }
+
+    /* ---------------- DELETE ---------------- */
+    else if (op == TestOp::DELETE_OP) {
+      for (int i = 0; i < total_ops; ++i) {
+        if (!mapembed.deletion(load_kvPairs[i].key)) {
+          printf("delete fail i:%d\n", i);
+          break;
+        }
+        ops++;
+      }
+    }
+
+    t_begin = t0;
+  }
+
+  auto t_end = std::chrono::high_resolution_clock::now();
+
+  printf("MapEmbed load factor: %lf, bits per key: %lf\n",
+         mapembed.load_factor(),
+         mapembed.bit_per_item());
+
+  if (ops == 0) return 0.0;
+
+  double time_us =
+      std::chrono::duration<double>(t_end - t_begin).count() * 1e6;
+
+  std::cout << "time: " << time_us
+            << " us, ops: " << ops << std::endl;
+  mapembed.print_memory_usage_gb();
+  return time_us / ops;   // us/op
+}
+
+
+KV_entry *kvPairs = nullptr;
+KV_entry *load_kvPairs = nullptr;
+KV_entry *run_kvPairs = nullptr;
+
 int main(){
+    load_kvPairs = new KV_entry[KV_NUM];
+    run_kvPairs = new KV_entry[KV_NUM];
     //create_random_kvs_keyint(kvPairs, KV_NUM);
-    read_ycsb_load(inputFilePath);
+    read_ycsb_load(inputFilePath,load_kvPairs);
+    read_ycsb_load(run_inputFilePath,run_kvPairs);
     // read_ycsb_load(run_inputFilePath,run_kvPairs);
-    // test_multi_threads();
     test_multi_threads();
+
+    // double ins = test_latency(TestOp::INSERT);
+    // double rd  = test_latency(TestOp::READ);
+    // double rd_n  = test_latency(TestOp::READ_NEGATIVE);
+    // double upd = test_latency(TestOp::UPDATE);
+    // double del = test_latency(TestOp::DELETE_OP);
+
+    // cout << "INSERT us/op = " << ins << endl;
+    // cout << "READ   us/op = " << rd  << endl;
+    // cout << "READ_NEGATIVE   us/op = " << rd_n  << endl;
+    // cout << "UPDATE us/op = " << upd << endl;
+    // cout << "DELETE us/op = " << del << endl;
+    delete [] load_kvPairs;
+    delete [] run_kvPairs;
     return 0;
 }

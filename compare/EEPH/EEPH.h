@@ -23,8 +23,8 @@
 
 // begin kv pair
 #define KEY_LEN          8
-#define VAL_LEN          8
-#define KV_NUM    30000000
+#define VAL_LEN          6400
+#define KV_NUM    2000000
 
 #define CACHELINESIZE   64
 #define BUCKETS_IN_LEVEL 4
@@ -53,7 +53,7 @@ namespace eeph
 
 // optimes
 // #define THRESHOLD
-#define USING_SSE
+// #define USING_SSE
 // #define LOOP_UNROLLING
 
 /* search clock */
@@ -118,7 +118,8 @@ int dram_memory_use=0;
 template <class T>
 struct _Pair {
   T key;
-  Value_t value;
+//   Value_t value;
+  char value[VAL_LEN];
 };
 template <class T>
 struct Bucket{
@@ -316,8 +317,11 @@ struct Bucket{
         // append kv pair
         int empty_pos = find_empty_pos();
         kv[empty_pos].key   = key_;
-        kv[empty_pos].value = value_;
+        //kv[empty_pos].value = value_;
+        std::memcpy(kv[empty_pos].value, value_, VAL_LEN);
         PMAllocator::Persist(&kv[empty_pos], sizeof(kv[empty_pos]));
+        // PMAllocator::Persist(&kv[empty_pos].key, sizeof(kv[empty_pos].key));
+        // PMAllocator::Persist(kv[empty_pos].value, VAL_LEN);
         // append metadata
         k[empty_pos] = cell_index;
         init_guide[empty_pos] = iguide;
@@ -345,8 +349,8 @@ struct Bucket{
                 init_guides[size] = iguide;
                 kvs[size].key = kv[i].key;
                 kvs[size].value = kv[i].value;
-                // memcpy(kvs[size].key, key[i], (KEY_LEN)*sizeof(char));
-                // memcpy(kvs[size].value, value[i], (VAL_LEN)*sizeof(char));
+                // memcpy(kvs[size].key, &kv[i].key, (KEY_LEN)*sizeof(char));
+                // memcpy(kvs[size].value, kv[i].value, (VAL_LEN)*sizeof(char));
                 size++;
                 
             }
@@ -403,8 +407,9 @@ struct Bucket{
                 if(value_ != NULL){
                     value_ = kv[i].value;
                 }else{
-                    char t[8] = "update";
-                    kv[i].value = t;
+                    char t[VAL_LEN] = "update";
+                    std::memcpy(kv[i].value,t, VAL_LEN);
+                    // kv[i].value = t;
                     PMAllocator::Persist(&kv[i].value, VAL_LEN);
                     return true;
                 }
@@ -1698,7 +1703,7 @@ FINAL:
     int insert_seq(T key, Value_t value, uint64_t cur_cnt)
     {
         int d = cur_cnt / BUCKET_CAPACITY;
-        Bucket<T> *bucket = layers[0];
+        Bucket<T> *bucket = layers->bp[0];
         int ret = bucket[d].insert_kv_to_bucket(key, value, 0, 0);
         return ret;
     }

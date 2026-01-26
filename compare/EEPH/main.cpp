@@ -15,7 +15,7 @@
 #include "PMAllocator.h"
 #include <chrono>
 
-#define TEST_SLOTS 30000000
+#define TEST_SLOTS 250000000
 
 using namespace std;
 
@@ -40,7 +40,7 @@ struct range {
 static const char pool_name_eeph[] = "/mnt/pmem/cq-hash/pmem_eeph1.data";
 static const char data_base_path[] = "../datasets/";
 // std::filesystem::path dataset_path = "/home/cq/datasets/ycsb/raw_ycsb_wl_1090_uniform.dat";
-static const size_t pool_size = 1024ul * 1024ul * 1024ul * 30ul;
+static const size_t pool_size = 1024ul * 1024ul * 1024ul * 128ul;
 
 DEFINE_string(index, "dash", "");
 DEFINE_string(dataset, "ycsb_wl_1090_uniform.dat", "dataset name");
@@ -94,340 +94,95 @@ void load_dataset(std::string wl_path, std::vector<Record> *data)
     // std::cout << "records: " << cnt << std::endl;
 }
 
-template <class T>
-void test_insert(struct range *range, Hash<T> *index)
-{
-    double res[10] = {0};
-    ofstream res_file("./res_insert.csv");
-    for(int t=0;t<10;++t){
-        set_affinity(range->index);
-        std::vector<Record> dataset = *range->workload;
-        int insert_failed = 0, insert_success = 0, not_found = 0;
-        int insert_cnt = 0, get_cnt = 0, update_cnt = 0, default_cnt = 0;
-        int ret;
-
-        int LFstepSum = 100;
-        int insertFailFlag = 0;
-        int LFstep[110];
-        int i=0;
-        for (i = 0; i <= LFstepSum; ++i) LFstep[i] = (int)((double)i * TEST_SLOTS / LFstepSum);
-        //latency
-        int lt_t = 10;
-        chrono::duration<double> diff(0);
-
-        cout << "------TEST INSERT------" << endl;
-        for(int st = 0; st < LFstepSum; st++){
-            auto start = std::chrono::high_resolution_clock::now();
-            for(i = LFstep[st]; i < LFstep[st+1]; ++i){
-                if(index->Insert(dataset[i].key, (Value_t)1) != 1){
-                    // printf("i:%d\n",i);
-                    insert_failed ++;
-                    if(insert_failed==8){
-                        insertFailFlag = 1;
-                        break;
-                    }
-                }
-            }
-            auto end = std::chrono::high_resolution_clock::now();
-            if(st == lt_t-1){
-                diff += (end - start);
-                index->getPmemNumber(true);
-            }
-            if(st == lt_t){
-                index->getPmemNumber(false);
-                cout << "Time taken by EEPH Step " << st << " : " << diff.count() << " seconds" << endl;
-                diff += (end - start);
-                //res_file << st << "," << diff.count()*1000000/(LFstep[st+1] - LFstep[st-1])<<endl;
-                res[lt_t/10] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st-1]));
-                diff = chrono::duration<double>(0);
-                lt_t += 10;
-            }
-            // if(st>=90 && st<95){
-            //     diff = end - start;
-            //     res[st-90] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st]));
-            // }
-            if(insertFailFlag) break;
-        }
-        index->getNumber();
-        memset(index,0,sizeof(eeph::EEPH<T>));
-        PMAllocator::Persist(index,sizeof(eeph::EEPH<T>));
-        int bucket_number = TEST_SLOTS / BUCKET_CAPACITY;//1000000;
-        int cell_number = 8 * bucket_number;//2000000;
-        int cell_hash = 16;
-        new (index) eeph::EEPH<T>(bucket_number, cell_number, cell_hash);
-    }
-    for(int i=0;i<5;++i){
-        //res_file<<i*10<<","<<res[i]/10<<endl;
-        res_file<<i+91<<","<<res[i]/10<<endl;
-    }
-    res_file.close();
-}
+enum class TestOp {
+  INSERT,
+  READ,
+  READ_NEGATIVE,
+  UPDATE,
+  DELETE_OP
+};
 
 template <class T>
-void test_read(struct range *range, Hash<T> *index)
+double test_latency(struct range *range,
+                    Hash<T> *index,
+                    TestOp op,
+                    size_t total_ops = TEST_SLOTS,
+                    size_t neg_reads = 1000000)
 {
-    double res[10] = {0};
-    ofstream res_file("./res_read.csv");
-    for(int t=0;t<10;++t){
-        set_affinity(range->index);
-        std::vector<Record> dataset = *range->workload;
-        int insert_failed = 0, insert_success = 0, not_found = 0;
-        int insert_cnt = 0, get_cnt = 0, update_cnt = 0, default_cnt = 0;
-        int ret;
+  set_affinity(range->index);
 
-        int LFstepSum = 100;
-        int insertFailFlag = 0;
-        int queryFailFlag = 0;
-        int LFstep[110];
-        int i=0;
-        for (i = 0; i <= LFstepSum; ++i) LFstep[i] = (int)((double)i * TEST_SLOTS / LFstepSum);
-        int lt_t = 10;
-        chrono::duration<double> diff(0);
-        cout << "------TEST READ------" << endl;
-        for(int st = 0; st < LFstepSum; st++){
-            for(i = LFstep[st]; i < LFstep[st+1]; ++i){
-                const Record& record = dataset[i];
-                if(index->Insert(record.key, (Value_t)1) != 1){
-                    cout<<"insert fail"<< i<<endl;
-                    insert_failed ++;
-                    if(insert_failed==8){
-                        insertFailFlag = 1;
-                        break;
-                    }
-                }
-            }
-            uint64_t key = 999;
-            // if(st == lt_t-1){
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int j = LFstep[st]; j < LFstep[st+1]; ++j){
-            //         Value_t val = index->Get(key, true);
-            //         // Value_t val = index->Get(dataset[j].key, true);
-            //         // if(val == NONE){
-            //         //     queryFailFlag = 1;
-            //         //     break;
-            //         // }
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     diff += (end - start);
-            // }
-            // if(st == lt_t){
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int j = LFstep[st]; j < LFstep[st+1]; ++j){
-            //         Value_t val = index->Get(key, true);
-            //         // Value_t val = index->Get(dataset[j].key, true);
-            //         // if(val == NONE){
-            //         //     queryFailFlag = 1;
-            //         //     break;
-            //         // }
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     cout << "Time taken by EEPH Step " << st << " : " << diff.count() << " seconds" << endl;
-            //     diff += (end - start);
-            //     //res_file << st << "," << diff.count()*1000000/(LFstep[st+1] - LFstep[st-1])<<endl;
-            //     res[lt_t/10] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st-1]));
-            //     diff = chrono::duration<double>(0);
-            //     lt_t += 10;
-            // }
-            if(st>=90 && st<95){
-                auto start = std::chrono::high_resolution_clock::now();
-                int j;
-                for(j = LFstep[st]; j < LFstep[st+1]; ++j){
-                    //Value_t val = index->Get(key, true);
-                    Value_t val = index->Get(dataset[j].key, true);
-                }
-                auto end = std::chrono::high_resolution_clock::now();
-                diff = end - start;
-                res[st-90] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st]));
-            }
-            if(insertFailFlag) break;
-        }
-        index->getNumber();
-        memset(index,0,sizeof(eeph::EEPH<T>));
-        PMAllocator::Persist(index,sizeof(eeph::EEPH<T>));
-        int bucket_number = TEST_SLOTS / BUCKET_CAPACITY;//1000000;
-        int cell_number = 8 * bucket_number;//2000000;
-        int cell_hash = 16;
-        new (index) eeph::EEPH<T>(bucket_number, cell_number, cell_hash);
+  std::vector<Record> dataset = *range->workload;
+  size_t ops = 0;
+
+  /* ================= INSERT ONLY ================= */
+  if (op == TestOp::INSERT) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    for (size_t i = 0; i < total_ops; ++i) {
+      if (index->Insert(dataset[i].key, (Value_t)1) != 1) {
+        break;
+      }
+      ops++;
     }
-    // for(int i=1;i<10;++i){
-    //     res_file<<i*10<<","<<res[i]/10<<endl;
-    // }
-    for(int i=0;i<5;++i){
-        //res_file<<i*10<<","<<res[i]/10<<endl;
-        res_file<<i+91<<","<<res[i]/10<<endl;
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    index->getNumber();
+
+    return ops == 0 ? 0.0 :
+      std::chrono::duration<double>(t1 - t0).count() * 1e6 / ops;
+  }
+
+  /* ================= LOAD PHASE ================= */
+  for (size_t i = 0; i < total_ops; ++i) {
+    if (index->Insert(dataset[i].key, (Value_t)1) != 1) {
+      break;
     }
-    res_file.close();
-}
-template <class T>
-void test_update(struct range *range, Hash<T> *index)
-{
-    double res[10] = {0};
-    ofstream res_file("./res_update.csv");
-    for(int t=0;t<10;++t){
-        set_affinity(range->index);
-        std::vector<Record> dataset = *range->workload;
-        int insert_failed = 0, insert_success = 0, not_found = 0;
-        int insert_cnt = 0, get_cnt = 0, update_cnt = 0, default_cnt = 0;
-        int ret;
+  }
 
-        int LFstepSum = 100;
-        int insertFailFlag = 0;
-        int queryFailFlag = 0;
-        int LFstep[110];
-        int i=0;
-        for (i = 0; i <= LFstepSum; ++i) LFstep[i] = (int)((double)i * TEST_SLOTS / LFstepSum);
-        int lt_t = 10;
-        chrono::duration<double> diff(0);
-        cout << "------TEST UPDATE------" << endl;
-        for(int st = 0; st < LFstepSum; st++){
-            for(i = LFstep[st]; i < LFstep[st+1]; ++i){
-                const Record& record = dataset[i];
-                if(index->Insert(record.key, (Value_t)1) != 1){
-                    insert_failed ++;
-                    if(insert_failed==8){
-                        insertFailFlag = 1;
-                        break;
-                    }
-                }
-            }
+  /* 构造一个“必然不存在”的 key（高位翻转） */
+  uint64_t neg_key = dataset[0].key ^ (1ULL << 63);
 
-            // if(st == lt_t-1){
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int u = LFstep[st]; u < LFstep[st+1]; ++u){
-            //         Value_t val = index->Get(dataset[u].key, true);
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     diff += (end - start);
-            // }
-            // if(st == lt_t){
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int u = LFstep[st]; u < LFstep[st+1]; ++u){
-            //         Value_t val = index->Get(dataset[u].key, true);
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     cout << "Time taken by EEPH Step " << st << " : " << diff.count() << " seconds" << endl;
-            //     diff += (end - start);
-            //     // res_file << st << "," << diff.count()*1000000/(LFstep[st+1] - LFstep[st-1])<<endl;
-            //     res[lt_t/10] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st-1]));
-            //     diff = chrono::duration<double>(0);
-            //     lt_t += 10;
-            // }
+  /* ================= MEASURE PHASE ================= */
+  auto t0 = std::chrono::high_resolution_clock::now();
 
-            if(st>=90 && st<95){
-                auto start = std::chrono::high_resolution_clock::now();
-                int j;
-                for(j = LFstep[st]; j < LFstep[st+1]; ++j){
-                    Value_t val = index->Get(dataset[j].key, true);
-                }
-                auto end = std::chrono::high_resolution_clock::now();
-                diff = end - start;
-                res[st-90] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st]));
-            }
-            if(insertFailFlag) break;
-        }
-        index->getNumber();
-        memset(index,0,sizeof(eeph::EEPH<T>));
-        PMAllocator::Persist(index,sizeof(eeph::EEPH<T>));
-        int bucket_number = TEST_SLOTS / BUCKET_CAPACITY;//1000000;
-        int cell_number = 8 * bucket_number;//2000000;
-        int cell_hash = 16;
-        new (index) eeph::EEPH<T>(bucket_number, cell_number, cell_hash);
+  /* -------- READ -------- */
+  if (op == TestOp::READ) {
+    for (size_t i = 0; i < total_ops; ++i) {
+      index->Get(run_dataset[i].key, false);
+      ops++;
     }
-    // for(int i=1;i<10;++i){
-    //     res_file<<i*10<<","<<res[i]/10<<endl;
-    // }
-    for(int i=0;i<5;++i){
-        res_file<<i+91<<","<<res[i]/10<<endl;
-    }
-    res_file.close();
-}
+  }
 
-template <class T>
-void test_delete(struct range *range, Hash<T> *index)
-{
-    double res[10] = {0};
-    ofstream res_file("./res_delete.csv");
-    for(int t=0;t<10;++t){
-        set_affinity(range->index);
-        std::vector<Record> dataset = *range->workload;
-        int insert_failed = 0, insert_success = 0, not_found = 0;
-        int insert_cnt = 0, get_cnt = 0, update_cnt = 0, default_cnt = 0;
-        int ret;
-
-        int LFstepSum = 100;
-        int insertFailFlag = 0;
-        int queryFailFlag = 0;
-        int LFstep[110];
-        int i=0;
-        for (i = 0; i <= LFstepSum; ++i) LFstep[i] = (int)((double)i * TEST_SLOTS / LFstepSum);
-        int lt_t = 10;
-        chrono::duration<double> diff(0);
-        cout << "------TEST DELETE------" << endl;
-        for(int st = 0; st < LFstepSum; st++){
-            for(i = LFstep[st]; i < LFstep[st+1]; ++i){
-                const Record& record = dataset[i];
-                if(index->Insert(record.key, (Value_t)1) != 1){
-                    insert_failed ++;
-                    if(insert_failed==8){
-                        insertFailFlag = 1;
-                        break;
-                    }
-                }
-            }
-
-            // if(st == lt_t-1){
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int u = LFstep[st]; u < LFstep[st+1]; ++u){
-            //         const Record& record = dataset[u];
-            //         if(index->Delete(record.key, true) == false){
-            //         }
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     diff += (end - start);
-            // }
-            // if(st == lt_t){
-            //     cout << "Time taken by EEPH Step " << st << " : " << diff.count() << " seconds" << endl;
-            //     auto start = std::chrono::high_resolution_clock::now();
-            //     for(int u = LFstep[st]; u < LFstep[st+1]; ++u){
-            //         const Record& record = dataset[u];
-            //         if(index->Delete(record.key, true) == false){
-            //         }
-            //     }
-            //     auto end = std::chrono::high_resolution_clock::now();
-            //     diff += (end - start);
-            //     //res_file << st << "," << diff.count()*1000000/(LFstep[st+1] - LFstep[st-1])<<endl;
-            //     res[lt_t/10] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st-1]));
-            //     diff = chrono::duration<double>(0);
-            //     lt_t += 10;
-            // }
-            if(st>=90 && st<95){
-                auto start = std::chrono::high_resolution_clock::now();
-                for(int u = LFstep[st]; u < LFstep[st+1]; ++u){
-                    const Record& record = dataset[u];
-                    if(index->Delete(record.key, true) == false){
-                    }
-                }
-                auto end = std::chrono::high_resolution_clock::now();
-                diff = end - start;
-                res[st-90] += (diff.count()*1000000/(LFstep[st+1] - LFstep[st]));
-            }
-            if(insertFailFlag) break;
-        }
-        index->getNumber();
-        memset(index,0,sizeof(eeph::EEPH<T>));
-        PMAllocator::Persist(index,sizeof(eeph::EEPH<T>));
-        int bucket_number = TEST_SLOTS / BUCKET_CAPACITY;//1000000;
-        int cell_number = 8 * bucket_number;//2000000;
-        int cell_hash = 16;
-        new (index) eeph::EEPH<T>(bucket_number, cell_number, cell_hash);
+  /* -------- READ NEGATIVE -------- */
+  else if (op == TestOp::READ_NEGATIVE) {
+    for (size_t i = 0; i < neg_reads; ++i) {
+      index->Get(neg_key, false);
+      ops++;
     }
-    // for(int i=1;i<10;++i){
-    //     res_file<<i*10<<","<<res[i]/10<<endl;
-    // }
-    for(int i=0;i<5;++i){
-        res_file<<i+91<<","<<res[i]/10<<endl;
+  }
+
+  /* -------- UPDATE（EEPH 中等价于 Get(true)） -------- */
+  else if (op == TestOp::UPDATE) {
+    for (size_t i = 0; i < total_ops; ++i) {
+      index->Get(run_dataset[i].key, true);
+      ops++;
     }
-    res_file.close();
+  }
+
+  /* -------- DELETE -------- */
+  else if (op == TestOp::DELETE_OP) {
+    for (size_t i = 0; i < total_ops; ++i) {
+      index->Delete(dataset[i].key, true);
+      ops++;
+    }
+  }
+
+  auto t1 = std::chrono::high_resolution_clock::now();
+  index->getNumber();
+
+  if (ops == 0) return 0.0;
+
+  return std::chrono::duration<double>(t1 - t0).count() * 1e6 / ops;
 }
 
 template <class T>
@@ -537,9 +292,11 @@ void run_benchmark(std::vector<Record> *data, Hash<T> *index, uint64_t dataset_s
 template <class T>
 void multi_thread_insert(struct range *range, Hash<T> *index)
 {
+    char val[VAL_LEN];
+    memset(val,'1',VAL_LEN);
     for(int i = range->begin; i < range->end; ++i){
-        if(index->Insert((*range->workload)[i].key, (Value_t)1) != 1){
-            break;
+        if(index->Insert((*range->workload)[i].key, val) != 1){
+            // break;
         }
     }
     gettimeofday(&range->tv, NULL);
@@ -592,17 +349,17 @@ void run_benchmark_multi(std::vector<Record> *data, Hash<T> *index, uint64_t dat
 {
     ofstream res_file("./multi-ycsbd-zipfian.csv");
     double res[6] = {0};
-    int thread_nums[6] = {1,2,4,8,16,24};
+    int thread_nums[6] = {16};
     for(int t=0;t<1;++t){
-        for(int i=3;i<4;++i){
-            int start1 = 0, start2 = 28500000;
+        for(int i=0;i<1;++i){
+            int start1 = 0, start2 = 2000000;
             // for(int j = start1 ;j < start2; j++){
             //     if(index->Insert((*data)[j].key, (Value_t)1) == false){
             //         break;
             //     }
             // }
             uint32_t thread_num = thread_nums[i];
-            uint32_t total_re = 30000000;
+            uint32_t total_re = 2000000;
             uint32_t chunk_size = total_re / thread_num;
             std::thread *thread_array[128];
             struct range *rarray = reinterpret_cast<range *>(malloc(thread_num * sizeof(struct range)));
@@ -647,7 +404,7 @@ void run_benchmark_multi(std::vector<Record> *data, Hash<T> *index, uint64_t dat
             memset(index,0,sizeof(eeph::EEPH<T>));
             PMAllocator::Persist(index,sizeof(eeph::EEPH<T>));
             int bucket_number = TEST_SLOTS / BUCKET_CAPACITY;//1000000;
-            int cell_number = 50 * bucket_number;//2000000;
+            int cell_number = 4 * bucket_number;//2000000;
             int cell_hash = 16;
             new (index) eeph::EEPH<T>(bucket_number, cell_number, cell_hash);
             std::cout << thread_num << " threads, Time = " << duration << " s, throughput = " << Mops <<endl;
@@ -685,7 +442,7 @@ void test_expansion(std::vector<Record> *data, Hash<T> *index){
 
 template <class T>
 void test_recover(std::vector<Record> *data, Hash<T> *index, int test_slots){
-    for(int i = 0; i < 22500000; ++i){
+    for(int i = 0; i < test_slots; ++i){
         if(index->Insert((*data)[i].key, (Value_t)1) == false){
             break;
         }
@@ -708,14 +465,14 @@ void init_index(std::string index_name, std::string dataset_name, std::string fv
     // int insert_cnt = 0, get_cnt = 0, update_cnt = 0, default_cnt = 0;
 
     // load dataset
-    const std::string tmp_path = data_base_path + std::string("load30M.dat");
-    const std::string run_path = data_base_path + std::string("run30M-YCSBD-zipfian.dat");
+    const std::string tmp_path = data_base_path + std::string("load2M.dat");
+    const std::string run_path = data_base_path + std::string("run_update_0.05_zipfian.dat");
     load_dataset(tmp_path, &dataset);
     load_dataset(run_path, &run_dataset);
     int dataset_size = dataset.size();
     std::cout << "============================= "<< index_name << " =============================" << std::endl;
     // load index
-    int test_slots = 25000000;
+    int test_slots = 2200000;
     if(index_name == "eeph")
     {
         if(fv == "fixed")
@@ -743,49 +500,30 @@ void init_index(std::string index_name, std::string dataset_name, std::string fv
         
     }
 
-    run_benchmark_multi(&dataset, eh, 0, &multi_thread_insert);
+    // struct range r;
+    // r.index = 0;
+    // r.begin = 0;
+    // r.end = dataset.size();
+    // r.workload = &dataset;
+
+    //double ins = test_latency(&r, eh, TestOp::INSERT);
+    //double rd  = test_latency(&r, eh, TestOp::READ);
+    //double neg = test_latency(&r, eh, TestOp::READ_NEGATIVE);
+    //double upd = test_latency(&r, eh, TestOp::UPDATE);
+    //double del = test_latency(&r, eh, TestOp::DELETE_OP);
+
+   // cout << "INSERT avg us/op        = " << ins << endl;
+    //cout << "READ avg us/op          = " << rd  << endl;
+   // cout << "READ_NEGATIVE avg us/op = " << neg << endl;
+    //cout << "UPDATE avg us/op        = " << upd << endl;
+   // cout << "DELETE avg us/op        = " << del << endl;
+
+    // run_benchmark_multi(&dataset, eh, 0, &multi_thread_insert);
     //test_expansion(&dataset, eh);
     // test_recover(&dataset, eh, test_slots);
     //run_benchmark(&dataset, eh, KV_NUM, &test_insert);
-    
-    
-    // insert operations
-    // gettimeofday(&start, NULL);
-    // for(int op_num = 0; op_num < dataset_size; op_num ++)
-    // {
-    //     const Record& record = dataset[op_num];
-    //     switch(record.op)
-    //     {
-    //         case Record::INSERT:
-    //             ret = eh->Insert(record.key, (Value_t)1);
-    //             if(ret == 0)
-    //                 insert_success ++;
-    //             else
-    //                 insert_failed ++;
-    //             insert_cnt ++;
-    //             break;
-    //         case Record::GET:
-    //             if(eh->Get(record.key, true) == NONE)
-    //                 not_found ++;
-    //             get_cnt ++;
-    //             break;
-    //         case Record::UPDATA:
-    //             update_cnt ++;
-    //             break;
-    //         default:
-    //             default_cnt ++;
-    //     }
-    // }
-    // gettimeofday(&stop, NULL);
-    // double insert_interval = (double)(stop.tv_usec - start.tv_usec) + 
-    //                         (double)(stop.tv_sec - start.tv_sec) * 1000000;
-    // std::cout << "throughput(Mops): " << (dataset_size - default_cnt) / insert_interval 
-    // << " toal time: " << insert_interval / CLOCKS_PER_SEC << std::endl;
-    // std::cout << "insert failed: " << insert_failed << " insert success: " << insert_success 
-    //     << " total records: " << dataset.size() << std::endl;
-    // std::cout << "search not found: " << not_found << " search cnt: " << get_cnt << std::endl; 
-    // std::cout << "update cnt: " << update_cnt << " default cnt: " << default_cnt << std::endl;
-    // std::cout << "============================= "<< index_name << " =============================" << std::endl;
+    run_benchmark_multi(&dataset, eh, KV_NUM, &multi_thread_insert);
+    //test_recover(&dataset,eh,250000);
 }
 
 int main(int argc, char* argv[]){

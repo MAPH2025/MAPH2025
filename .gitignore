@@ -1,5 +1,7 @@
-/data/
+/ycsb_data/
 /cpu/
 /compare/EEPH/datasets/*.dat
 /compare/EEPH/build/*
 /compare/CuckooDuo/
+/compare/Halo/VIPER.data/*
+/MAPH/MAPH_*

@@ -17,8 +17,8 @@
 // #define PMEM
 // begin kv pair
 #define KEY_LEN 8
-#define VAL_LEN 8
-#define KV_NUM 30000000
+#define VAL_LEN 64
+#define KV_NUM 2000000
 #define PMEM_PATH "/mnt/pmem/MapEmbed/MapEmbed"  // 持久内存文件路径
 #define PMEM_SIZE (1024 * 1024 * 1024) * 30ul // 30GB 持久内存大小
 

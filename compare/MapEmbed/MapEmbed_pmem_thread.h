@@ -19,10 +19,10 @@
 #define PMEM
 // begin kv pair
 #define KEY_LEN 8
-#define VAL_LEN 8
-#define KV_NUM 30000000
-#define PMEM_PATH "/mnt/pmem/MapEmbed/MapEmbed"  // 持久内存文件路径
-#define PMEM_SIZE (1024 * 1024 * 1024) * 30ul // 30GB 持久内存大小
+#define VAL_LEN 2560
+#define KV_NUM 220000000
+#define PMEM_PATH "/mnt/pmem/MapEmbed"  // 持久内存文件路径
+#define PMEM_SIZE (1024 * 1024 * 1024) * 128ul // 30GB 持久内存大小
 #define RW_LOCK_ME
 
 using namespace std;
@@ -41,7 +41,9 @@ struct KV_entry{
     char value[VAL_LEN];
 };
 
-KV_entry kvPairs[KV_NUM];
+extern KV_entry *kvPairs;
+extern KV_entry *load_kvPairs;
+extern KV_entry *run_kvPairs;
 
 inline void random_string(char* str, int len){
     for(int i = 0; i < len; ++i)
@@ -71,7 +73,7 @@ int cnt = 0; // debug use
 
 #define MAX_LAYER 12
 #define M 32                // max number of hash functions in each layer
-#define N 20                // item number in a bucket
+#define N 8                // item number in a bucket
 
 struct Bucket{
     char key[N][KEY_LEN];
@@ -861,10 +863,44 @@ public:
     double load_factor(){
         calculate_bucket_items();
         int bucket_slots = bucket_number * N;
-        int dram_use = sizeof(MapEmbed)+4*(cell_number[0]+cell_number[1]+cell_number[2]);
-        int pmem_use = sizeof(Bucket)*bucket_number;
-        cout<<"dram_use: "<<(double)dram_use/(1024*1024*1024)<<" pmem_use: "<<(double)pmem_use/(1024*1024*1024)<<endl;
+        // int dram_use = sizeof(MapEmbed)+4*(cell_number[0]+cell_number[1]+cell_number[2]);
+        // int pmem_use = sizeof(Bucket)*bucket_number;
+        // cout<<"dram_use: "<<(double)dram_use/(1024*1024*1024)<<" pmem_use: "<<(double)pmem_use/(1024*1024*1024)<<endl;
+        print_memory_usage_gb();
         return (double)bucket_items / bucket_slots;
+    }
+
+   void print_memory_usage_gb() const {
+        /* ---------- PMem ---------- */
+        double pmem_gb = (double)bucket_number * sizeof(Bucket)
+                        / (1024.0 * 1024.0 * 1024.0);
+
+        /* ---------- DRAM ---------- */
+        size_t dram_bytes = 0;
+
+        // cell bitmap
+        for (int i = 0; i < cell_layer; ++i) {
+            dram_bytes += (size_t)cell_number[i] * sizeof(uint32_t);
+        }
+
+        // cell pointer array
+        dram_bytes += (size_t)cell_layer * sizeof(uint32_t*);
+
+        // metadata
+        dram_bytes += sizeof(cell_offset);
+        dram_bytes += sizeof(seed_hash_to_cell);
+        dram_bytes += sizeof(seed_hash_to_bucket);
+        dram_bytes += sizeof(seed_hash_to_guide);
+
+        // MapEmbed object itself
+        dram_bytes += sizeof(MapEmbed);
+
+        double dram_gb = (double)dram_bytes
+                        / (1024.0 * 1024.0 * 1024.0);
+
+        printf("[MapEmbed Memory Usage]\n");
+        printf("  PMem : %.3f GB\n", pmem_gb);
+        printf("  DRAM : %.6f GB\n", dram_gb);
     }
 };
 

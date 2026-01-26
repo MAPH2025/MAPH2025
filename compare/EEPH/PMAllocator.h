@@ -39,6 +39,7 @@ struct PMAllocator {
       pm_pool_ = pmemobj_create(pool_name, layout_name, pool_size,
                                      (S_IWUSR | S_IRUSR));
       if (pm_pool_ == nullptr) {
+        perror("pmemobj_create");
         LOG_FATAL("failed to create a pool;");
       }
       return;
@@ -96,7 +97,7 @@ struct PMAllocator {
     return pmemobj_direct(pmemobj_root(instance_->pm_pool_, size));
   }
 
-  static void Persist(void* ptr, size_t size) {
+  static void Persist(const void* ptr, size_t size) {
     pmemobj_persist(instance_->pm_pool_, ptr, size);
   }
 

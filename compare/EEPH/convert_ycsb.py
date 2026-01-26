@@ -1,6 +1,7 @@
 import sys
 import struct
 import re
+import os
 
 # 定义操作类型
 INSERT = 0
@@ -47,12 +48,23 @@ def convert_ycsb_file(input_file, output_file):
                 f_out.write(struct.pack('IQQ', op, key, value))
             line = f_in.readline()
 
+def convert_directory(input_dir, output_dir):
+    """将输入目录下的所有.txt文件转换为.dat文件并保存到输出目录"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)  # 如果输出目录不存在，则创建
+
+    for filename in os.listdir(input_dir):
+        if filename.endswith('.txt'):
+            input_file = os.path.join(input_dir, filename)
+            output_file = os.path.join(output_dir, filename.replace('.txt', '.dat'))
+            convert_ycsb_file(input_file, output_file)
+            print(f"转换完成: {input_file} -> {output_file}")
+
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("用法: python convert_ycsb.py <输入文件> <输出文件>")
+        print("用法: python convert_ycsb.py <输入目录> <输出目录>")
         sys.exit(1)
     
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
-    convert_ycsb_file(input_file, output_file)
-    print(f"转换完成: {input_file} -> {output_file}")
+    input_dir = sys.argv[1]
+    output_dir = sys.argv[2]
+    convert_directory(input_dir, output_dir)
