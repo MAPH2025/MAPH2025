@@ -3,12 +3,13 @@
 
 ## Structure
 
-The pmem directory contains the code for our algorithm, including:
+The MAPH directory contains the code for our algorithm, including:
 - murmur3.h -- hash function
 - MAPH.h -- basic algorithm implementation  
 - MAPH_expansion.h -- dynamic expansion extension
 - MAPH_recovery.h -- consistency recovery extension
-- main.cpp -- test program implementation
+- MAPH-largekv.h -- support large kv
+- main.cpp -- benchmark test implementation
 
 The compare directory contains implementations of comparison algorithms MapEmbed and EEPH.
 
@@ -22,6 +23,7 @@ First configure the PMem environment, write the corresponding PMem file path int
 Compilation command:
 ```bash
 g++ main.cpp -o main_pmem -lpmem -I. -std=c++17
+sudo ./main_pmem
 ```
 
 ### MapEmbed
